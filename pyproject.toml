@@ -1,0 +1,85 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "xai_crop_yield"
+version = "0.0.1"
+description = "Explaining LSTM's for crop yield prediction using multi-temporal earth observation data"
+authors = [
+  { name = "Cuvuliuc Alex-Andrei" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
+]
+dependencies = [
+    "loguru",
+    "pip",
+    "pytest",
+    "python-dotenv",
+    "ruff",
+    "torch>=2.8.0",
+    "torchgeo>=0.7.1",
+    "tqdm",
+]
+requires-python = "~=3.12.0"
+
+
+[tool.mypy]
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.ruff]
+exclude = [
+  '.bzr',
+  '.direnv',
+  '.eggs',
+  '.git',
+  '.git-rewrite',
+  '.hg',
+  '.ipynb_checkpoints',
+  '.mypy_cache',
+  '.nox',
+  '.pants.d',
+  '.pyenv',
+  '.pytest_cache',
+  '.pytype',
+  '.ruff_cache',
+  '.svn',
+  '.tox',
+  '.venv',
+  '.vscode',
+  '__pypackages__',
+  '_build',
+  'buck-out',
+  'build',
+  'dist',
+  'node_modules',
+  'site-packages',
+  'venv',
+]
+line-length = 80
+indent-width = 4
+src = ['xai_crop_yield']
+include = ['pyproject.toml', 'xai_crop_yield/**/*.py']
+
+[tool.ruff.lint]
+select = ['E4', 'E7', 'E9', 'F', 'I']
+ignore = ['F403']
+fixable = ['ALL']
+unfixable = []
+dummy-variable-rgx = '^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$'
+
+[tool.ruff.lint.isort]
+known-first-party = ['xai_crop_yield']
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.format]
+quote-style = 'single'
+indent-style = 'space'
+skip-magic-trailing-comma = false
+line-ending = 'auto'
+
