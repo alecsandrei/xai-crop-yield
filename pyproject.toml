@@ -16,12 +16,12 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 dependencies = [
+    "gdown",
     "loguru",
     "pip",
     "pytest",
     "python-dotenv",
     "ruff",
-    "torch>=2.8.0",
     "torchgeo>=0.7.1",
     "tqdm",
 ]
@@ -31,6 +31,7 @@ requires-python = "~=3.12.0"
 [tool.mypy]
 ignore_missing_imports = true
 check_untyped_defs = true
+
 
 [tool.ruff]
 exclude = [
