@@ -275,12 +275,12 @@ class ConvLSTMRegressor(nn.Module):
         self.fc = nn.Linear(self.conv.out_channels, 1, device=DEVICE)
 
     def forward(self, input_tensor: torch.Tensor):
-        _, last_states = self.convlstm(input_tensor)
+        layer_output, last_states = self.convlstm(input_tensor)
         h, c = last_states[-1]
         h = self.conv(h)
         pooled = self.pool(h).view(h.size(0), -1)
-        fc = self.fc(pooled)
-        return fc
+        output = self.fc(pooled)
+        return (output, layer_output, last_states)
 
 
 class RegressionMetricCollection(torchmetrics.MetricCollection):
@@ -304,7 +304,7 @@ class ConvLSTMModel(pl.LightningModule):
         self.test_metrics = self.train_metrics.clone(prefix='test_')
 
     def forward(self, x):
-        return self.model(x).view(-1)
+        return self.model(x)[0].view(-1)
 
     def training_step(self, train_batch, batch_idx):
         x, y = train_batch
@@ -349,7 +349,7 @@ if __name__ == '__main__':
         RAW_DATA_DIR, country='usa', years=list(range(2005, 2016))
     )
     dataset._load()
-    train, test, val = random_split(dataset, (0.7, 0.15, 0.15))
+    train, test, val = random_split(dataset, (0.8, 0.1, 0.1))
     train_dataloader = DataLoader(train, batch_size=32, shuffle=True)
     val_dataloader = DataLoader(val, batch_size=16, shuffle=False)
     test_dataloader = DataLoader(test, batch_size=16, shuffle=False)
@@ -366,12 +366,10 @@ if __name__ == '__main__':
     model = ConvLSTMModel(convlstm)
     trainer = pl.Trainer(
         accelerator='gpu',
-        max_epochs=500,
-        # min_epochs=50,
+        max_epochs=200,
         enable_model_summary=True,
         enable_progress_bar=True,
         log_every_n_steps=1,
-        # callbacks=[EarlyStopping(monitor='val_loss', mode='min', patience=50)],
     )
     trainer.fit(
         model,

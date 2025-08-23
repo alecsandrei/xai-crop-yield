@@ -3,11 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from dotenv import load_dotenv
 from loguru import logger
-
-# Load environment variables from .env file if it exists
-load_dotenv()
 
 # Paths
 PROJ_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +21,8 @@ REPORTS_DIR = PROJ_ROOT / 'reports'
 FIGURES_DIR = REPORTS_DIR / 'figures'
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+SEED = 0
+
 # If tqdm is installed, configure loguru with tqdm.write
 # https://github.com/Delgan/loguru/issues/135
 try:
