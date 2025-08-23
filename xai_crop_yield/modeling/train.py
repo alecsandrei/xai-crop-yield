@@ -9,9 +9,8 @@ import torch
 import torch.nn as nn
 import torchmetrics
 import torchmetrics.regression
-from torch.utils.data import DataLoader, random_split
 
-from xai_crop_yield.config import DEVICE, RAW_DATA_DIR
+from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
 
 
@@ -283,6 +282,18 @@ class ConvLSTMRegressor(nn.Module):
         return (output, layer_output, last_states)
 
 
+class RootMeanSquaredError(torchmetrics.Metric):
+    def __init__(self):
+        super().__init__()
+        self.mse = torchmetrics.regression.MeanSquaredError()
+
+    def update(self, preds, target):
+        self.mse.update(preds, target)
+
+    def compute(self):
+        return torch.sqrt(self.mse.compute())
+
+
 class RegressionMetricCollection(torchmetrics.MetricCollection):
     def __init__(self, prefix: str | None = None):
         super().__init__(
@@ -290,24 +301,35 @@ class RegressionMetricCollection(torchmetrics.MetricCollection):
                 'r2': torchmetrics.regression.R2Score(),
                 'mse': torchmetrics.regression.MeanSquaredError(),
                 'mae': torchmetrics.regression.MeanAbsoluteError(),
+                'rmse': RootMeanSquaredError(),
+                'mape': torchmetrics.regression.MeanAbsolutePercentageError(),
             }
         )
 
 
 class ConvLSTMModel(pl.LightningModule):
-    def __init__(self, model: nn.Module):
+    def __init__(self):
         super().__init__()
-        self.model = model
+        self.model = ConvLSTMRegressor(
+            input_dim=9,
+            hidden_dim=[10],
+            kernel_size=(3, 3),
+            num_layers=1,
+            batch_first=True,
+            bias=True,
+            return_all_layers=True,
+        )
         self.criterion = nn.MSELoss()
         self.train_metrics = RegressionMetricCollection(prefix='train_')
         self.val_metrics = self.train_metrics.clone(prefix='val_')
         self.test_metrics = self.train_metrics.clone(prefix='test_')
 
     def forward(self, x):
-        return self.model(x)[0].view(-1)
+        return self.model(x)[0]
 
     def training_step(self, train_batch, batch_idx):
         x, y = train_batch
+        y = y.view(-1, 1)
         logits = self.forward(x)
         self.train_metrics.update(logits, y)
         loss = self.criterion(logits, y.float())
@@ -322,6 +344,7 @@ class ConvLSTMModel(pl.LightningModule):
 
     def validation_step(self, val_batch, batch_idx):
         x, y = val_batch
+        y = y.view(-1, 1)
         logits = self.forward(x)
         self.val_metrics.update(logits, y)
         loss = self.criterion(logits, y.float())
@@ -330,6 +353,7 @@ class ConvLSTMModel(pl.LightningModule):
 
     def test_step(self, test_batch, batch_idx):
         x, y = test_batch
+        y = y.view(-1, 1)
         logits = self.forward(x)
         self.test_metrics.update(logits, y)
         loss = self.criterion(logits, y.float())
@@ -349,21 +373,11 @@ if __name__ == '__main__':
         RAW_DATA_DIR, country='usa', years=list(range(2005, 2016))
     )
     dataset._load()
-    train, test, val = random_split(dataset, (0.8, 0.1, 0.1))
-    train_dataloader = DataLoader(train, batch_size=32, shuffle=True)
-    val_dataloader = DataLoader(val, batch_size=16, shuffle=False)
-    test_dataloader = DataLoader(test, batch_size=16, shuffle=False)
-
-    convlstm = ConvLSTMRegressor(
-        input_dim=9,
-        hidden_dim=[10],
-        kernel_size=(3, 3),
-        num_layers=1,
-        batch_first=True,
-        bias=True,
-        return_all_layers=True,
+    train_dataloader, test_dataloader, val_dataloader = (
+        dataset._get_dataloaders((0.8, 0.1, 0.1))
     )
-    model = ConvLSTMModel(convlstm)
+
+    model = ConvLSTMModel()
     trainer = pl.Trainer(
         accelerator='gpu',
         max_epochs=200,
@@ -377,3 +391,5 @@ if __name__ == '__main__':
         val_dataloaders=val_dataloader,
     )
     trainer.test(model, dataloaders=test_dataloader)
+
+    trainer.save_checkpoint(MODELS_DIR / 'checkpoint.ckpt')

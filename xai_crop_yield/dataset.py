@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset, random_split
 from torchgeo.datasets import SustainBenchCropYield
 
 from xai_crop_yield.config import DEVICE, RAW_DATA_DIR
@@ -27,14 +27,57 @@ class SustainBenchLocation(t.NamedTuple):
         assert len(split) == 3
         return cls(split[0], split[1])
 
+    def __str__(self) -> str:
+        return f'{self.county}, {self.state}'
+
 
 @dataclass
 class SustainBenchCropYieldTimeseries(Dataset):
+    """Descriptions were taken from https://sustainlab-group.github.io/sustainbench/docs/datasets/sdg2/crop_yield.html"""
+
     root: Path
     years: c.Sequence[int]
     country: str = 'usa'
     locations: c.Sequence[SustainBenchLocation] = field(init=False)
     data: c.Sequence[tuple[torch.Tensor, torch.Tensor]] = field(init=False)
+
+    @property
+    def _dataset_description(self) -> str:
+        return (
+            'County-level yields from the USA were chosen for the analysis. '
+            'The inputs are spectral band and temperature histograms over each county '
+            'for the harvest season, derived from MODIS satellite images of each region. '
+            'The outputs are soybean yields in metric tonnes per harvested hectare over the counties.'
+        )
+
+    @property
+    def _input_description(self) -> str:
+        return (
+            'The input is a 32x32x9 band histogram over a county’s harvest season. '
+            'For each of 7 surface reflectance and 2 surface temperature bands '
+            'we bin MODIS pixel values into 32 ranges and 32 timesteps per harvest season.'
+        )
+
+    @property
+    def _output_description(self) -> str:
+        return 'The output is the soybean yield over the harvest season, in metric tonnes per harvested hectare.'
+
+    @property
+    def _feature_names(self) -> list[str]:
+        return [
+            'b1_RED_620-670nm',
+            'b2_NIR_841-876nm',
+            'b3_BLUE_459-479nm',
+            'b4_GREEN_545-565nm',
+            'b5_NIR_1230-1250nm',
+            'b6_SWIR_1628-1652nm',
+            'b7_SWIR_2105-2155nm',
+            'daytime_LST',
+            'nighttime_LST',
+        ]
+
+    def _get_readable_location(self, index: int):
+        return self.locations[index]
 
     def _handle_split(
         self, split: str
@@ -81,9 +124,6 @@ class SustainBenchCropYieldTimeseries(Dataset):
                 [entry['image'].unsqueeze(0) for entry in location_data[:-1]]
             ).to(DEVICE)
             assert images.size(0) == len(location_data) - 1
-            # targets = torch.Tensor(
-            #    [entry['label'] for entry in location_data]
-            # ).to(DEVICE)
             target = location_data[-1]['label'].to(DEVICE)
             return (images, target)
 
@@ -91,6 +131,20 @@ class SustainBenchCropYieldTimeseries(Dataset):
         self.data = [
             concatenate_location_data(location) for location in filtered_data
         ]
+
+    def _get_dataloaders(
+        self,
+        train_test_validation_split: tuple[float, float, float],
+        batch_size: int = 32,
+    ) -> tuple[DataLoader, DataLoader, DataLoader]:
+        np.testing.assert_almost_equal(sum(train_test_validation_split), 1)
+        train, test, val = random_split(self, train_test_validation_split)
+        train_dataloader = DataLoader(
+            train, batch_size=batch_size, shuffle=True
+        )
+        val_dataloader = DataLoader(val, batch_size=batch_size, shuffle=False)
+        test_dataloader = DataLoader(test, batch_size=batch_size, shuffle=False)
+        return (train_dataloader, test_dataloader, val_dataloader)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         return self.data[index]
