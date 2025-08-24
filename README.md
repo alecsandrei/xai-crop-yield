@@ -4,7 +4,7 @@
     <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
 </a>
 
-Explaining LSTM's for crop yield prediction using multi-temporal earth observation data
+Explaining ConvLSTM's for crop yield prediction using multi-temporal earth observation data.
 
 ## Project Organization
 
@@ -13,7 +13,6 @@ Explaining LSTM's for crop yield prediction using multi-temporal earth observati
 ├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
 ├── README.md          <- The top-level README for developers using this project.
 ├── data
-│   ├── external       <- Data from third party sources.
 │   ├── interim        <- Intermediate data that has been transformed.
 │   ├── processed      <- The final, canonical data sets for modeling.
 │   └── raw            <- The original, immutable data dump.
