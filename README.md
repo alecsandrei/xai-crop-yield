@@ -6,6 +6,8 @@
 
 Explaining ConvLSTM's for crop yield prediction using multi-temporal earth observation data.
 
+To run, you need uv and an Ollama LLM server.
+
 ## Project Organization
 
 ```
