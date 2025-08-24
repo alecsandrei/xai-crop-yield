@@ -7,6 +7,7 @@ import operator
 import typing as t
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +19,8 @@ from xai_crop_yield.config import DEVICE, RAW_DATA_DIR
 
 
 class SustainBenchLocation(t.NamedTuple):
-    state: str
     county: str
+    state: str
 
     @classmethod
     def from_string(cls: t.Type[t.Self], string: str) -> t.Self:
@@ -28,7 +29,7 @@ class SustainBenchLocation(t.NamedTuple):
         return cls(split[0], split[1])
 
     def __str__(self) -> str:
-        return f'{self.county}, {self.state}'
+        return f'{self.county.title()}, {self.state.upper()}'
 
 
 @dataclass
@@ -40,6 +41,9 @@ class SustainBenchCropYieldTimeseries(Dataset):
     country: str = 'usa'
     locations: c.Sequence[SustainBenchLocation] = field(init=False)
     data: c.Sequence[tuple[torch.Tensor, torch.Tensor]] = field(init=False)
+
+    def __post_init__(self):
+        self._load()
 
     @property
     def _dataset_description(self) -> str:
@@ -65,19 +69,29 @@ class SustainBenchCropYieldTimeseries(Dataset):
     @property
     def _feature_names(self) -> list[str]:
         return [
-            'b1_RED_620-670nm',
-            'b2_NIR_841-876nm',
-            'b3_BLUE_459-479nm',
-            'b4_GREEN_545-565nm',
-            'b5_NIR_1230-1250nm',
-            'b6_SWIR_1628-1652nm',
-            'b7_SWIR_2105-2155nm',
-            'daytime_LST',
-            'nighttime_LST',
+            'Red 620-670nm',
+            'NIR 841-876nm',
+            'Blue 459-479nm',
+            'Green 545-565nm',
+            'NIR 1230-1250nm',
+            'SWIR 1628-1652nm',
+            'SWIR 2105-2155nm',
+            'Daytime LST',
+            'Nighttime LST',
         ]
 
-    def _get_readable_location(self, index: int):
-        return self.locations[index]
+    @property
+    def _timestamps(self) -> list[str]:
+        delta = timedelta(days=8)
+        dateformat = '%B-%d'
+
+        dates = []
+        curr_date = datetime(year=2000, month=2, day=26)  # year is arbitrary
+        for _ in range(32):
+            dates.append(curr_date.strftime(dateformat))
+            curr_date += delta
+        assert len(dates) == 32
+        return dates
 
     def _handle_split(
         self, split: str
@@ -106,7 +120,6 @@ class SustainBenchCropYieldTimeseries(Dataset):
                 continue
             list_ = data[SustainBenchLocation.from_string(location)]
             bisect.insort(list_, dataset, key=operator.itemgetter('year'))
-
         filtered_data = {
             location: yearly_data
             for location, yearly_data in data.items()
@@ -121,11 +134,12 @@ class SustainBenchCropYieldTimeseries(Dataset):
         ) -> tuple[torch.Tensor, torch.Tensor]:
             location_data = filtered_data[location]
             images = torch.cat(
-                [entry['image'].unsqueeze(0) for entry in location_data[:-1]]
+                [entry['image'].unsqueeze(0) for entry in location_data]
             ).to(DEVICE)
-            assert images.size(0) == len(location_data) - 1
-            target = location_data[-1]['label'].to(DEVICE)
-            return (images, target)
+            targets = torch.cat(
+                [entry['label'].unsqueeze(0) for entry in location_data]
+            ).to(DEVICE)
+            return (images, targets)
 
         self.locations = list(filtered_data)
         self.data = [
@@ -147,7 +161,10 @@ class SustainBenchCropYieldTimeseries(Dataset):
         return (train_dataloader, test_dataloader, val_dataloader)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.data[index]
+        images, targets = self.data[index]
+        images = images[:-1]
+        target = targets[-1]
+        return (images, target)
 
     def __len__(self):
         return len(self.data)
@@ -157,4 +174,3 @@ if __name__ == '__main__':
     dataset = SustainBenchCropYieldTimeseries(
         RAW_DATA_DIR, country='usa', years=list(range(2005, 2014))
     )
-    dataset._load()

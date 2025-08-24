@@ -28,7 +28,10 @@ SEED = 0
 try:
     from tqdm import tqdm
 
-    logger.remove(0)
+    try:
+        logger.remove(0)
+    except Exception:
+        ...
     logger.add(lambda msg: tqdm.write(msg, end=''), colorize=True)
 except ModuleNotFoundError:
     pass

@@ -372,7 +372,6 @@ if __name__ == '__main__':
     dataset = SustainBenchCropYieldTimeseries(
         RAW_DATA_DIR, country='usa', years=list(range(2005, 2016))
     )
-    dataset._load()
     train_dataloader, test_dataloader, val_dataloader = (
         dataset._get_dataloaders((0.8, 0.1, 0.1))
     )

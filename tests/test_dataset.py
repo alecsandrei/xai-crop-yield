@@ -8,6 +8,5 @@ def test_sustain_bench_dataset():
     dataset = SustainBenchCropYieldTimeseries(
         RAW_DATA_DIR, country='usa', years=[2010, 2011]
     )
-    dataset._load()
     assert hasattr(dataset, 'data')
     assert hasattr(dataset, 'locations')
