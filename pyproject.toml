@@ -16,11 +16,16 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 dependencies = [
+    "captum>=0.8.0",
     "gdown",
+    "geopandas>=1.1.1",
     "loguru",
+    "ollama>=0.5.3",
     "pip",
     "pytest",
     "ruff",
+    "shap>=0.48.0",
+    "streamlit>=1.48.1",
     "torchgeo>=0.7.1",
     "tqdm",
 ]
