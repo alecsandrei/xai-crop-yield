@@ -8,7 +8,7 @@ Explaining ConvLSTM's for crop yield prediction using multi-temporal earth obser
 
 To run, you need uv and an Ollama LLM server.
 
-<video src="https://raw.githubusercontent.com/alecsandrei/xai-crop-yield/master/docs/example.mp4" width="1000" />
+<video src="https://raw.githubusercontent.com/alecsandrei/xai-crop-yield/master/docs/example.mp4" width="1000"></video>
 
 ## Project Organization
 
