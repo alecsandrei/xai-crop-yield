@@ -119,18 +119,27 @@ class HeatmapExplainer(Explainer):
 class MultivariateTimeseriesExplainer(Explainer):
     timestamps: c.Sequence[str]
     channel_names: c.Sequence[str]
+    timestamp_groups: c.Sequence[int] | None = None
+    channel_groups: c.Sequence[int] | None = None
 
     def get_feature_mask(self, input: torch.Tensor) -> torch.Tensor:
         assert input.ndim == 5, (
             f'Expected B, T, C, H, W shape, found {input.ndim}'
         )
         B, T, C, H, W = input.shape
-        return (
-            torch.arange(C * W)
-            .view(1, C, 1, W)
-            .expand(1, T, C, H, W)
-            .to(DEVICE)
-        )
+        if (
+            self.timestamp_groups is not None
+            and self.channel_groups is not None
+        ):
+            assert len(self.timestamp_groups) == W
+            assert len(self.channel_groups) == C
+            expandable_range = (
+                (torch.Tensor(self.timestamp_groups).expand(C, W) + 1)
+                * (torch.Tensor(self.channel_groups).reshape(-1, 1) + 1)
+            ).view(1, C, 1, W)
+        else:
+            expandable_range = torch.arange(C * W).view(1, C, 1, W)
+        return expandable_range.expand(1, T, C, H, W).to(torch.int).to(DEVICE)
 
     def attributions_to_dict(
         self,
@@ -149,11 +158,22 @@ class MultivariateTimeseriesExplainer(Explainer):
                     channel_attribution_map.setdefault(channel_name, []).append(
                         (timestamp, prediction)
                     )
-                attribution_maps.append(channel_attribution_map)
+            attribution_maps.append(channel_attribution_map)
         return attribution_maps
 
     def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
-        return attributions[:, 0, :, 0, :]
+        timestamp_indices = list(range((attributions.shape[4])))
+        channel_indices = list(range((attributions.shape[2])))
+        if self.timestamp_groups is not None:
+            unique = list(dict.fromkeys(self.timestamp_groups))
+            timestamp_indices = [
+                self.timestamp_groups.index(val) for val in unique
+            ]
+
+        if self.channel_groups is not None:
+            unique = list(dict.fromkeys(self.channel_groups))
+            channel_indices = [self.channel_groups.index(val) for val in unique]
+        return attributions[:, 0, channel_indices, 0][:, :, timestamp_indices]
 
 
 @dataclass
@@ -306,11 +326,13 @@ Timeseries explainer results:
         if self.multivariate_timeseries_explainers:
             multivariate_timeseries_explainers_prompt = f"""
 Multivariate timeseries explainer results:
+According to USDA, for soybean, Planting season ends in July,
+Mid-Season ends in September and the Harvest season ends in November.
 
 {pprint.pformat(self.multivariate_timeseries_explainers, indent=1)}
 """
             prompt_string = '\n'.join(
-                [multivariate_timeseries_explainers_prompt, prompt_string]
+                [prompt_string, multivariate_timeseries_explainers_prompt]
             )
         return prompt_string
 
@@ -353,7 +375,7 @@ if __name__ == '__main__':
         MODELS_DIR / 'checkpoint.ckpt'
     ).to(DEVICE)
 
-    index = 50
+    index = 52
     dataset = SustainBenchCropYieldTimeseries(
         RAW_DATA_DIR, country='usa', years=list(range(2005, 2016))
     )
@@ -375,11 +397,14 @@ if __name__ == '__main__':
     cropcalendar_attributions = (
         timeseries_cropcalendar_explainer.feature_ablation(data)
     )
-    breakpoint()
+    modis_band_groups, modis_group_labels = get_modis_bands_groups(dataset)
     multivariate_timeseries_explainer = MultivariateTimeseriesExplainer(
-        model, dataset._timestamps, dataset._feature_names
+        model,
+        list(crop_calendar_labels.values()),
+        list(modis_group_labels.values()),
+        crop_calendar_groups,
+        modis_band_groups,
     )
-    timeseries_explainer.feature_ablation(data)
     channel_feature_ablation = channel_explainer.feature_ablation(data)
     channel_kernel_shap = channel_explainer.kernel_shap(data)
     timeseries_feature_ablation = timeseries_explainer.feature_ablation(data)
@@ -387,6 +412,7 @@ if __name__ == '__main__':
     multivariate_feature_ablation = (
         multivariate_timeseries_explainer.feature_ablation(data)
     )
+    breakpoint()
     multivariate_kernel_shap = multivariate_timeseries_explainer.kernel_shap(
         data
     )
@@ -398,19 +424,20 @@ if __name__ == '__main__':
         target=round(float(target.cpu()), 4),
         prediction=round(float(prediction.detach().cpu()), 4),
         channel_explainers=[
-            channel_feature_ablation,
-            channel_kernel_shap,
+            # channel_feature_ablation,
+            # channel_kernel_shap,
         ],
         timeseries_explainers=[
-            timeseries_feature_ablation,
-            timeseries_kernel_shap,
+            # timeseries_feature_ablation,
+            # timeseries_kernel_shap,
         ],
         multivariate_timeseries_explainers=[
             multivariate_feature_ablation,
-            multivariate_kernel_shap,
+            # multivariate_kernel_shap,
         ],
     )
     prompt = story.build()
     stream = story.get_stream(prompt)
+    print(prompt)
     for chunk in stream:
         print(chunk['message']['content'], flush=True, end='')
