@@ -16,3 +16,10 @@ markdown = """
 """
 
 st.markdown(markdown)
+
+st.video(
+    'https://raw.githubusercontent.com/alecsandrei/xai-crop-yield/master/docs/example.mp4',
+    autoplay=True,
+    loop=True,
+    muted=True,
+)
