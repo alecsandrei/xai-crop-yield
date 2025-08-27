@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections.abc as c
+import datetime
 import pprint
 import typing as t
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from operator import itemgetter
 
 import captum
 import matplotlib.pyplot as plt
+import numpy as np
 import ollama
 import torch
 
@@ -15,7 +17,7 @@ from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
 from xai_crop_yield.modeling.train import ConvLSTMModel
 
-FeatureAttribution = dict
+FeatureAttribution = dict | tuple[str, float]
 Attributions = list[FeatureAttribution] | torch.Tensor
 
 
@@ -157,21 +159,24 @@ class MultivariateTimeseriesExplainer(Explainer):
 @dataclass
 class TimeseriesExplainer(Explainer):
     timestamps: c.Sequence[str]
+    groups: c.Sequence[int] | None = None
 
     def get_feature_mask(self, input: torch.Tensor) -> torch.Tensor:
         assert input.ndim == 5, (
             f'Expected B, T, C, H, W shape, found {input.ndim}'
         )
         B, T, C, H, W = input.shape
-        return (
-            torch.arange(W).view(1, 1, 1, 1, W).expand(1, T, C, H, W).to(DEVICE)
-        )
+        if self.groups is not None:
+            groups = torch.Tensor(self.groups).to(torch.int)
+        else:
+            groups = torch.arange(W)
+        return groups.view(1, 1, 1, 1, W).expand(1, T, C, H, W).to(DEVICE)
 
     def attributions_to_dict(
         self,
         attributions: torch.Tensor,
     ) -> list[Attributions]:
-        attribution_maps = []
+        attribution_maps: list[Attributions] = []
         for batch in attributions:
             attribution_map = []
             for name, attribution in zip(self.timestamps, batch):
@@ -183,7 +188,11 @@ class TimeseriesExplainer(Explainer):
         return attribution_maps
 
     def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
-        return attributions[:, 0, 0, 0]
+        indices = list(range((attributions.shape[4])))
+        if self.groups is not None:
+            unique = list(dict.fromkeys(self.groups))
+            indices = [self.groups.index(val) for val in unique]
+        return attributions[:, 0, 0, 0, indices]
 
 
 @dataclass
@@ -194,7 +203,7 @@ class ChannelExplainer(Explainer):
         self,
         attributions: torch.Tensor,
     ) -> list[Attributions]:
-        attribution_maps = []
+        attribution_maps: list[Attributions] = []
         for batch in attributions:
             attribution_map = []
             for name, attribution in zip(self.channel_names, batch):
@@ -216,11 +225,6 @@ class ChannelExplainer(Explainer):
 
     def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
         return attributions[:, 0, :, 0, 0]
-
-
-@dataclass
-class SaliencyMap:
-    model: ConvLSTMModel
 
 
 @dataclass
@@ -302,6 +306,31 @@ Multivariate timeseries explainer results:
         return prompt_string
 
 
+def get_crop_calendar_groups(
+    timestamps: list[str],
+) -> tuple[list[int], dict[int, str]]:
+    dummy_year = 1970
+    soybean_calendar_labels = {0: 'Plant', 1: 'Mid-Season', 2: 'Harvest'}
+    soybean_calendar = [
+        datetime.datetime(dummy_year, 7, 1).timestamp(),  # start of mid-season
+        datetime.datetime(
+            dummy_year, 9, 1
+        ).timestamp(),  # start of harvest season
+    ]
+
+    datetimes = []
+    for timestamp in timestamps:
+        as_datetime = datetime.datetime.strptime(timestamp, '%B-%d')
+        as_datetime = datetime.datetime(
+            dummy_year, as_datetime.month, as_datetime.day
+        )
+        datetimes.append(as_datetime.timestamp())
+
+    groups = np.digitize(datetimes, soybean_calendar).tolist()
+
+    return (groups, soybean_calendar_labels)
+
+
 if __name__ == '__main__':
     model = ConvLSTMModel.load_from_checkpoint(
         MODELS_DIR / 'checkpoint.ckpt'
@@ -315,11 +344,21 @@ if __name__ == '__main__':
     data = data.to(DEVICE).unsqueeze(0)
     target = target.to(DEVICE).view(-1, 1)
     prediction = model(data)
-    explainer = HeatmapExplainer(model)
-    attributions = explainer.deeplift(data)
-    explainer.plot(attributions['attributions'][0])
+    crop_calendar_groups, crop_calendar_labels = get_crop_calendar_groups(
+        dataset._timestamps
+    )
+    # explainer = HeatmapExplainer(model)
+    # attributions = explainer.deeplift(data)
+    # explainer.plot(attributions['attributions'][0])
     channel_explainer = ChannelExplainer(model, dataset._feature_names)
     timeseries_explainer = TimeseriesExplainer(model, dataset._timestamps)
+    timeseries_cropcalendar_explainer = TimeseriesExplainer(
+        model, list(crop_calendar_labels.values()), groups=crop_calendar_groups
+    )
+    cropcalendar_attributions = (
+        timeseries_cropcalendar_explainer.feature_ablation(data)
+    )
+    breakpoint()
     multivariate_timeseries_explainer = MultivariateTimeseriesExplainer(
         model, dataset._timestamps, dataset._feature_names
     )
