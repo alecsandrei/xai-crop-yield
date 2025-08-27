@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
@@ -17,7 +18,14 @@ from xai_crop_yield.config import (
 from xai_crop_yield.dataset import get_dataset
 from xai_crop_yield.features import get_county_data
 from xai_crop_yield.modeling.train import get_model
-from xai_crop_yield.modeling.xai import ChannelExplainer, HeatmapExplainer
+from xai_crop_yield.modeling.xai import (
+    ChannelExplainer,
+    FeatureAttribution,
+    HeatmapExplainer,
+    TimeseriesExplainer,
+    get_crop_calendar_groups,
+    get_modis_bands_groups,
+)
 
 
 def plot_heatmaps(index: int, show: bool = False):
@@ -49,7 +57,7 @@ def plot_heatmaps(index: int, show: bool = False):
     if show:
         plt.show()
     fig.savefig(
-        FIGURES_DIR / f'heatmaps_sample{index}.png',
+        FIGURES_DIR / f'heatmaps_{dataset.locations[index]}.png',
         dpi=300,
         bbox_inches='tight',
     )
@@ -79,7 +87,9 @@ def plot_bands(index: int, show: bool = False):
     if show:
         plt.show()
     fig.savefig(
-        FIGURES_DIR / f'bands_sample{index}.png', dpi=300, bbox_inches='tight'
+        FIGURES_DIR / f'bands_{dataset.locations[index]}.png',
+        dpi=300,
+        bbox_inches='tight',
     )
 
 
@@ -119,9 +129,131 @@ def save_attribution_distance_data(index: int):
     distance_gdf.to_file(PROCESSED_DATA_DIR / 'similarities.fgb')
 
 
-if __name__ == '__main__':
-    index = 74
+def plot_attributions(
+    attributions: FeatureAttribution,
+    show: bool = False,
+):
+    if isinstance(attributions, torch.Tensor):
+        raise NotImplementedError()
+    df = pd.DataFrame(attributions, columns=['name', 'attribution'])
+    max = df['attribution'].abs().max() * 1.2
 
-    save_attribution_distance_data(index)
+    fig, ax = plt.subplots()
+    ax.bar(
+        df['name'],
+        df['attribution'],
+        color=np.where(df['attribution'] < 0, 'crimson', 'blue'),
+    )
+    ax.set_ylim(-max, max)
+    ax.set_ylabel('Attribution')
+    ax.axhline(0, color='black')
+    fig.tight_layout()
+    if show:
+        plt.show()
+    return fig
+
+
+def plot_channel_attributions(index: int):
+    directory = FIGURES_DIR / 'channel_attributions'
+    directory.mkdir(exist_ok=True)
+    model = get_model()
+    dataset = get_dataset()
+    location = dataset.locations[index]
+    data, target = dataset[index]
+    data = data.to(DEVICE).unsqueeze(0)
+    groups, labels = get_modis_bands_groups(dataset._timestamps)
+    grouped_channel_explainer = ChannelExplainer(
+        model, list(labels.values()), groups, sort=False
+    )
+    grouped_channel_attributions = grouped_channel_explainer.feature_ablation(
+        data
+    )['attributions'][0]
+    fig = plot_attributions(grouped_channel_attributions, show=False)
+    plt.title(f'MODIS band attribution for {location}')
+    plt.xlabel('Bands')
+    fig.savefig(
+        directory
+        / f'{dataset.locations[index]}_grouped_channels_attributions.png',
+        bbox_inches='tight',
+        dpi=300,
+    )
+    plt.close(fig)
+
+    channel_explainer = ChannelExplainer(
+        model, dataset._feature_names, sort=False
+    )
+    channel_attributions = channel_explainer.feature_ablation(data)[
+        'attributions'
+    ][0]
+    fig = plot_attributions(channel_attributions, show=False)
+    plt.xlabel('Bands')
+    plt.xticks(fontsize=9)
+    plt.title(f'MODIS band attribution for {location}')
+
+    fig.savefig(
+        directory / f'{dataset.locations[index]}_channel_attributions.png',
+        bbox_inches='tight',
+        dpi=300,
+    )
+    plt.close(fig)
+
+
+def plot_timeseries_attributions(index: int):
+    directory = FIGURES_DIR / 'timeseries_attributions'
+    directory.mkdir(exist_ok=True)
+    model = get_model()
+    dataset = get_dataset()
+    location = dataset.locations[index]
+    data, target = dataset[index]
+    data = data.to(DEVICE).unsqueeze(0)
+    groups, crop_calendar_labels = get_crop_calendar_groups(dataset._timestamps)
+    crop_calendar_explainer = TimeseriesExplainer(
+        model, list(crop_calendar_labels.values()), groups, sort=False
+    )
+    crop_calendar_attributions = crop_calendar_explainer.feature_ablation(data)[
+        'attributions'
+    ][0]
+    fig = plot_attributions(crop_calendar_attributions, show=False)
+    plt.title(f'Crop calendar attribution for {location}')
+    plt.xlabel('Crop calendar')
+    fig.savefig(
+        directory
+        / f'{dataset.locations[index]}_crop_calendar_attributions.png',
+        bbox_inches='tight',
+        dpi=300,
+    )
+    plt.close(fig)
+
+    timestamps = [
+        datetime.datetime.strptime(timestamp, '%B-%d').strftime('%d/%m')
+        for timestamp in dataset._timestamps
+    ]
+    timeseries_explainer = TimeseriesExplainer(model, timestamps, sort=False)
+    timeseries_attributions = timeseries_explainer.feature_ablation(data)[
+        'attributions'
+    ][0]
+    fig = plot_attributions(timeseries_attributions, show=False)
+    plt.xticks(rotation=90, fontsize=10)
+    plt.xlabel('Date')
+    plt.title(f'Timeseries attribution for {location}')
+
+    fig.savefig(
+        directory / f'{dataset.locations[index]}_timeseries_attributions.png',
+        bbox_inches='tight',
+        dpi=300,
+    )
+    plt.close(fig)
+
+
+if __name__ == '__main__':
+    dataset = get_dataset()
+    for index in range(len(dataset)):
+        plot_channel_attributions(index)
+        plot_timeseries_attributions(index)
+    # index = 50
+    # plot_attributions(index, show=True)
+    # breakpoint()
+
+    # save_attribution_distance_data(index)
     # plot_bands(index)
     # plot_heatmaps(index)

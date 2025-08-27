@@ -160,6 +160,7 @@ class MultivariateTimeseriesExplainer(Explainer):
 class TimeseriesExplainer(Explainer):
     timestamps: c.Sequence[str]
     groups: c.Sequence[int] | None = None
+    sort: bool = True
 
     def get_feature_mask(self, input: torch.Tensor) -> torch.Tensor:
         assert input.ndim == 5, (
@@ -184,7 +185,8 @@ class TimeseriesExplainer(Explainer):
                     (name, round(float(attribution.cpu()), 4))
                 )
             attribution_maps.append(attribution_map)
-            attribution_map.sort(key=itemgetter(1), reverse=True)
+            if self.sort:
+                attribution_map.sort(key=itemgetter(1), reverse=True)
         return attribution_maps
 
     def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
@@ -198,6 +200,8 @@ class TimeseriesExplainer(Explainer):
 @dataclass
 class ChannelExplainer(Explainer):
     channel_names: c.Sequence[str]
+    groups: c.Sequence[int] | None = None
+    sort: bool = True
 
     def attributions_to_dict(
         self,
@@ -211,7 +215,8 @@ class ChannelExplainer(Explainer):
                     (name, round(float(attribution.cpu()), 4))
                 )
             attribution_maps.append(attribution_map)
-            attribution_map.sort(key=itemgetter(1), reverse=True)
+            if self.sort:
+                attribution_map.sort(key=itemgetter(1), reverse=True)
         return attribution_maps
 
     def get_feature_mask(self, input: torch.Tensor) -> torch.Tensor:
@@ -224,7 +229,11 @@ class ChannelExplainer(Explainer):
         )
 
     def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
-        return attributions[:, 0, :, 0, 0]
+        indices = list(range((attributions.shape[2])))
+        if self.groups is not None:
+            unique = list(dict.fromkeys(self.groups))
+            indices = [self.groups.index(val) for val in unique]
+        return attributions[:, 0, indices, 0, 0]
 
 
 @dataclass
@@ -304,6 +313,14 @@ Multivariate timeseries explainer results:
                 [multivariate_timeseries_explainers_prompt, prompt_string]
             )
         return prompt_string
+
+
+def get_modis_bands_groups(
+    dataset: SustainBenchCropYieldTimeseries,
+) -> tuple[list[int], dict[int, str]]:
+    group_labels = {0: 'Visible', 1: 'NIR', 2: 'SWIR', 3: 'LST'}
+    band_label_mapper = [0, 1, 0, 0, 1, 2, 2, 3, 3]
+    return (band_label_mapper, group_labels)
 
 
 def get_crop_calendar_groups(

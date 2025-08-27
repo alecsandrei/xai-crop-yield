@@ -69,15 +69,15 @@ class SustainBenchCropYieldTimeseries(Dataset):
     @property
     def _feature_names(self) -> list[str]:
         return [
-            'Red 620-670nm',
-            'NIR 841-876nm',
-            'Blue 459-479nm',
-            'Green 545-565nm',
-            'NIR 1230-1250nm',
-            'SWIR 1628-1652nm',
-            'SWIR 2105-2155nm',
-            'Daytime LST',
-            'Nighttime LST',
+            'Red',
+            'NIR1',
+            'Blue',
+            'Green',
+            'NIR2',
+            'SWIR1',
+            'SWIR2',
+            'Day LST',
+            'Night LST',
         ]
 
     @property
