@@ -14,6 +14,12 @@ from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
 
 
+def get_model():
+    return ConvLSTMModel.load_from_checkpoint(
+        MODELS_DIR / 'checkpoint.ckpt'
+    ).to(DEVICE)
+
+
 class ConvLSTMCell(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size, bias):
         """

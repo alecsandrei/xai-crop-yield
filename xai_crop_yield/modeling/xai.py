@@ -3,11 +3,11 @@ from __future__ import annotations
 import collections.abc as c
 import pprint
 import typing as t
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from operator import itemgetter
 
 import captum
+import matplotlib.pyplot as plt
 import ollama
 import torch
 
@@ -15,8 +15,8 @@ from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
 from xai_crop_yield.modeling.train import ConvLSTMModel
 
-FeatureAttribution = tuple[str, float]
-Attributions = list[FeatureAttribution]
+FeatureAttribution = dict
+Attributions = list[FeatureAttribution] | torch.Tensor
 
 
 class ExplainerOutput(t.TypedDict):
@@ -25,21 +25,23 @@ class ExplainerOutput(t.TypedDict):
 
 
 @dataclass
-class Explainer(ABC):
+class Explainer:
     model: ConvLSTMModel
 
-    @abstractmethod
-    def get_feature_mask(self, input: torch.Tensor) -> torch.Tensor: ...
+    def get_feature_mask(self, input: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(
+            'The attribution method requires an implementation of get_feature_mask'
+        )
 
-    @abstractmethod
-    def attributions_to_dict(
-        self, attributions: torch.Tensor
-    ) -> list[t.Any]: ...
+    def attributions_to_dict(self, attributions: torch.Tensor) -> list[t.Any]:
+        raise NotImplementedError(
+            'Tee attribution method requires an implementation of attributions_to_dict'
+        )
 
-    @abstractmethod
-    def index_attributions(
-        self, attributions: torch.Tensor
-    ) -> torch.Tensor: ...
+    def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(
+            'The attribution method requires an implementation of index_attributions'
+        )
 
     def feature_ablation(self, input: torch.Tensor) -> ExplainerOutput:
         ablation = captum.attr.FeatureAblation(self.model)
@@ -63,6 +65,52 @@ class Explainer(ABC):
             'attributions': self.attributions_to_dict(attr),
             'method': 'Kernel SHAP',
         }
+
+    def occlusion(
+        self,
+        input: torch.Tensor,
+        sliding_window_shape: tuple[int, int] = (3, 3),
+    ) -> ExplainerOutput:
+        occlusion = captum.attr.Occlusion(self.model)
+        attr = self.index_attributions(
+            occlusion.attribute(
+                input,
+                sliding_window_shapes=(
+                    input.shape[1],
+                    input.shape[2],
+                    sliding_window_shape[0],
+                    sliding_window_shape[1],
+                ),
+            )
+        )
+        return {'attributions': attr, 'method': 'Occlusion'}
+
+    def deeplift(self, input: torch.Tensor) -> ExplainerOutput:
+        deeplift = captum.attr.DeepLift(self.model)
+        attr = deeplift.attribute(input)
+        return {'attributions': attr, 'method': 'DeepLift'}
+
+
+@dataclass
+class HeatmapExplainer(Explainer):
+    def index_attributions(self, input: torch.Tensor) -> torch.Tensor:
+        return input[:, 0, 0]
+
+    def plot(
+        self,
+        attribution: torch.Tensor,
+        show: bool = False,
+        ax: plt.Axes | None = None,
+        **kwargs,
+    ) -> plt.Axes:
+        assert attribution.ndim == 2
+        arr = attribution.detach().cpu().numpy()
+        if ax is None:
+            fig, ax = plt.subplots()
+        ax.imshow(arr, **kwargs)
+        if show:
+            plt.show()
+        return ax
 
 
 @dataclass
@@ -171,6 +219,11 @@ class ChannelExplainer(Explainer):
 
 
 @dataclass
+class SaliencyMap:
+    model: ConvLSTMModel
+
+
+@dataclass
 class AttributionStory:
     dataset_description: str
     input_description: str
@@ -260,7 +313,11 @@ if __name__ == '__main__':
     )
     data, target = dataset[index]
     data = data.to(DEVICE).unsqueeze(0)
+    target = target.to(DEVICE).view(-1, 1)
     prediction = model(data)
+    explainer = HeatmapExplainer(model)
+    attributions = explainer.deeplift(data)
+    explainer.plot(attributions['attributions'][0])
     channel_explainer = ChannelExplainer(model, dataset._feature_names)
     timeseries_explainer = TimeseriesExplainer(model, dataset._timestamps)
     multivariate_timeseries_explainer = MultivariateTimeseriesExplainer(

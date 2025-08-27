@@ -15,7 +15,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchgeo.datasets import SustainBenchCropYield
 
-from xai_crop_yield.config import DEVICE, RAW_DATA_DIR
+from xai_crop_yield.config import DEVICE, RAW_DATA_DIR, YEARS
 
 
 class SustainBenchLocation(t.NamedTuple):
@@ -168,6 +168,12 @@ class SustainBenchCropYieldTimeseries(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+
+def get_dataset(years: list[int] = YEARS):
+    return SustainBenchCropYieldTimeseries(
+        RAW_DATA_DIR, country='usa', years=YEARS
+    )
 
 
 if __name__ == '__main__':

@@ -22,6 +22,7 @@ FIGURES_DIR = REPORTS_DIR / 'figures'
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 SEED = 0
+YEARS = list(range(2005, 2016))
 
 # If tqdm is installed, configure loguru with tqdm.write
 # https://github.com/Delgan/loguru/issues/135
