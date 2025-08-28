@@ -22,6 +22,7 @@ from xai_crop_yield.modeling.xai import (
     ChannelExplainer,
     FeatureAttribution,
     HeatmapExplainer,
+    MultivariateTimeseriesExplainer,
     TimeseriesExplainer,
     get_crop_calendar_groups,
     get_modis_bands_groups,
@@ -153,6 +154,59 @@ def plot_attributions(
     return fig
 
 
+def plot_multivariate_timeseries_attributions(
+    attributions: FeatureAttribution, show: bool = False
+):
+    df = pd.DataFrame(attributions)
+
+    max = df.abs().values.ravel().max() * 1.2
+    fig, ax = plt.subplots()
+    for col in attributions:
+        ax.plot(df.index, df[col], label=col, marker='o')
+
+    plt.ylim(-max, max)
+    plt.axhline(0, color='black', linestyle='--')
+    plt.xlabel('Crop calendar')
+    plt.ylabel('Attribution')
+    if show:
+        plt.show()
+    return fig
+
+
+def plot_grouped_channel_timestamp_attributions(index, show: bool = False):
+    directory = FIGURES_DIR / 'multivariate_timeseries_attributions'
+    directory.mkdir(exist_ok=True)
+    model = get_model()
+    dataset = get_dataset()
+    location = dataset.locations[index]
+    data, target = dataset[index]
+    data = data.to(DEVICE).unsqueeze(0)
+    crop_calendar_groups, crop_calendar_labels = get_crop_calendar_groups(
+        dataset._timestamps
+    )
+    modis_band_groups, modis_band_labels = get_modis_bands_groups()
+
+    multivariate_explainer = MultivariateTimeseriesExplainer(
+        model,
+        list(crop_calendar_labels.values()),
+        list(modis_band_labels.values()),
+        crop_calendar_groups,
+        modis_band_groups,
+    )
+    attributions = multivariate_explainer.kernel_shap(data)['attributions'][0]
+    fig = plot_multivariate_timeseries_attributions(attributions, show=False)
+    plt.title(f'Multivariate crop calendar attributions for {location}')
+    plt.legend(title='Bands')
+    plt.tight_layout()
+    fig.savefig(
+        directory
+        / f'{dataset.locations[index]}_multivariate_timeseries_attributions.png',
+        bbox_inches='tight',
+        dpi=300,
+    )
+    plt.close(fig)
+
+
 def plot_channel_attributions(index: int):
     directory = FIGURES_DIR / 'channel_attributions'
     directory.mkdir(exist_ok=True)
@@ -161,7 +215,7 @@ def plot_channel_attributions(index: int):
     location = dataset.locations[index]
     data, target = dataset[index]
     data = data.to(DEVICE).unsqueeze(0)
-    groups, labels = get_modis_bands_groups(dataset._timestamps)
+    groups, labels = get_modis_bands_groups()
     grouped_channel_explainer = ChannelExplainer(
         model, list(labels.values()), groups, sort=False
     )
@@ -248,8 +302,9 @@ def plot_timeseries_attributions(index: int):
 if __name__ == '__main__':
     dataset = get_dataset()
     for index in range(len(dataset)):
-        plot_channel_attributions(index)
-        plot_timeseries_attributions(index)
+        plot_grouped_channel_timestamp_attributions(index)
+        # plot_channel_attributions(index)
+        # plot_timeseries_attributions(index)
     # index = 50
     # plot_attributions(index, show=True)
     # breakpoint()

@@ -17,7 +17,7 @@ from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
 from xai_crop_yield.modeling.train import ConvLSTMModel
 
-FeatureAttribution = dict | tuple[str, float]
+FeatureAttribution = tuple[str, float] | dict[str, float]
 Attributions = list[FeatureAttribution] | torch.Tensor
 
 
@@ -136,6 +136,7 @@ class MultivariateTimeseriesExplainer(Explainer):
             expandable_range = (
                 (torch.Tensor(self.timestamp_groups).expand(C, W) + 1)
                 * (torch.Tensor(self.channel_groups).reshape(-1, 1) + 1)
+                - 1
             ).view(1, C, 1, W)
         else:
             expandable_range = torch.arange(C * W).view(1, C, 1, W)
@@ -144,10 +145,10 @@ class MultivariateTimeseriesExplainer(Explainer):
     def attributions_to_dict(
         self,
         attributions: torch.Tensor,
-    ) -> list[dict[str, Attributions]]:
-        attribution_maps: list[dict[str, Attributions]] = []
+    ) -> list[dict[str, FeatureAttribution]]:
+        attribution_maps: list[dict[str, FeatureAttribution]] = []
         for batch in attributions:
-            channel_attribution_map: dict[str, list[tuple[str, float]]] = {}
+            channel_attribution_map: dict[str, dict[str, float]] = {}
             for channel_name, channel_attributions in zip(
                 self.channel_names, batch
             ):
@@ -155,9 +156,9 @@ class MultivariateTimeseriesExplainer(Explainer):
                     self.timestamps, channel_attributions
                 ):
                     prediction = round(float(timestamp_attribution.cpu()), 4)
-                    channel_attribution_map.setdefault(channel_name, []).append(
-                        (timestamp, prediction)
-                    )
+                    channel_attribution_map.setdefault(channel_name, {})[
+                        timestamp
+                    ] = prediction
             attribution_maps.append(channel_attribution_map)
         return attribution_maps
 
@@ -289,8 +290,6 @@ class AttributionStory:
 {self.input_description}
 {self.output_description}
 
-The chosen model was a ConvLSTM. The input dimension shape is represented by B, T, C, H, W.
-
 For the {self.county} county the prediction was {self.prediction:.3f} with a ground
 truth value of {self.target:.3f}. XAI methods were employed to explain the prediction and 
 a summary of the results will be provided in JSON. Important to note that the channel attributions and the
@@ -337,9 +336,7 @@ Mid-Season ends in September and the Harvest season ends in November.
         return prompt_string
 
 
-def get_modis_bands_groups(
-    dataset: SustainBenchCropYieldTimeseries,
-) -> tuple[list[int], dict[int, str]]:
+def get_modis_bands_groups() -> tuple[list[int], dict[int, str]]:
     group_labels = {0: 'Visible', 1: 'NIR', 2: 'SWIR', 3: 'LST'}
     band_label_mapper = [0, 1, 0, 0, 1, 2, 2, 3, 3]
     return (band_label_mapper, group_labels)
@@ -400,6 +397,11 @@ if __name__ == '__main__':
     modis_band_groups, modis_group_labels = get_modis_bands_groups(dataset)
     multivariate_timeseries_explainer = MultivariateTimeseriesExplainer(
         model,
+        dataset._timestamps,
+        dataset._feature_names,
+    )
+    multivariate_grouped_timeseries_explainer = MultivariateTimeseriesExplainer(
+        model,
         list(crop_calendar_labels.values()),
         list(modis_group_labels.values()),
         crop_calendar_groups,
@@ -412,9 +414,14 @@ if __name__ == '__main__':
     multivariate_feature_ablation = (
         multivariate_timeseries_explainer.feature_ablation(data)
     )
-    breakpoint()
     multivariate_kernel_shap = multivariate_timeseries_explainer.kernel_shap(
         data
+    )
+    multivariate_grouped_feature_ablation = (
+        multivariate_grouped_timeseries_explainer.feature_ablation(data)
+    )
+    multivariate_grouped_kernel_shap = (
+        multivariate_grouped_timeseries_explainer.kernel_shap(data)
     )
     story = AttributionStory(
         dataset._dataset_description,
@@ -432,7 +439,7 @@ if __name__ == '__main__':
             # timeseries_kernel_shap,
         ],
         multivariate_timeseries_explainers=[
-            multivariate_feature_ablation,
+            multivariate_grouped_kernel_shap,
             # multivariate_kernel_shap,
         ],
     )
