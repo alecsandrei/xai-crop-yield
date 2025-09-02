@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import collections.abc as c
 import pathlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import current_thread
 
 import altair as alt
 import geopandas as gpd
@@ -9,14 +12,29 @@ import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+import torch
+from streamlit.runtime.scriptrunner import (
+    add_script_run_ctx,
+    get_script_run_ctx,
+)
+from torch import nn
 
-from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
+import xai_crop_yield.dataset
+import xai_crop_yield.modeling.train
+from xai_crop_yield.config import DEVICE, YEARS
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
-from xai_crop_yield.modeling.train import ConvLSTMModel
+from xai_crop_yield.features import get_county_data
 from xai_crop_yield.modeling.xai import (
     AttributionStory,
     ChannelExplainer,
+    ExplainerOutput,
+    Features,
+    Grader,
+    MultivariateTimeseriesExplainer,
+    StoryEvaluator,
     TimeseriesExplainer,
+    get_crop_calendar_groups,
+    get_modis_bands_groups,
 )
 
 st.set_page_config(layout='wide')
@@ -27,23 +45,21 @@ DOWNLOADS_PATH = STREAMLIT_STATIC_PATH / 'downloads'
 if not DOWNLOADS_PATH.is_dir():
     DOWNLOADS_PATH.mkdir()
 
-YEARS = list(range(2005, 2016))
 YEARS_STR = [str(year) for year in YEARS]
 
-ATTRIBUTION_METHODS = ['Feature ablation', 'Kernel SHAP']
+ATTRIBUTION_METHODS = [
+    'Kernel SHAP',
+    'Feature ablation',
+    'Integrated Gradients',
+]
+
+type MethodName = str
+type AttributionFunc = c.Callable[[torch.Tensor, MethodName], ExplainerOutput]
 
 
 @st.cache_data
 def get_geom_data():
-    links = {
-        'state': RAW_DATA_DIR / 'us_states.geojson',
-        'county': RAW_DATA_DIR / 'us_counties.geojson',
-    }
-    state = gpd.read_file(links['state'])[['STUSPS', 'STATEFP', 'NAME']]
-    state.rename(columns={'NAME': 'STATE_NAME'}, inplace=True)
-    county = gpd.read_file(links['county'])
-    county = county.merge(state, on='STATEFP')
-    county['NAME_LOWERCASE'] = county['NAME'].str.lower()
+    county = get_county_data()
     yield_data = get_counties_yield_data()
     yield_data['NAME_LOWERCASE'] = yield_data['NAME'].str.lower()
 
@@ -88,17 +104,13 @@ def get_counties(state: str | None = None) -> list[str]:
 
 
 @st.cache_data
-def get_dataset():
-    return SustainBenchCropYieldTimeseries(
-        RAW_DATA_DIR, country='usa', years=YEARS
-    )
+def get_dataset() -> SustainBenchCropYieldTimeseries:
+    return xai_crop_yield.dataset.get_dataset()
 
 
 @st.cache_data
-def get_model():
-    return ConvLSTMModel.load_from_checkpoint(
-        MODELS_DIR / 'checkpoint.ckpt'
-    ).to(DEVICE)
+def get_model() -> nn.Module:
+    return xai_crop_yield.modeling.train.get_model()
 
 
 @st.cache_data
@@ -162,82 +174,205 @@ def get_crop_yield_chart(state: str, county: str):
     return chart
 
 
-def get_attribution_chart(output, is_timeseries: bool = False):
-    data = pd.DataFrame(output['attributions'][0], columns=['x', 'y'])
-    if is_timeseries:
-        data['x'] = pd.to_datetime(data['x'], format='%B-%d')
+def get_multivariate_chart(attributions: c.Sequence[ExplainerOutput]):
+    methods = set(attribution['method'] for attribution in attributions)
+    assert len(methods) == len(attributions), 'Expected different methods'
+    dfs = []
+    for output in attributions:
+        assert len(output['attributions']) == 1, (
+            'Only single batch is supported'
+        )
+        df = output['attributions'][0].as_df()
+        df['method'] = output['method']
+        dfs.append(df)
+    df = pd.concat(dfs, ignore_index=True)
+
+    df['zero'] = 0
+    base = alt.Chart(df, width=280)
+    chart_attributions = base.mark_bar().encode(
+        alt.Y('timestamp:N', sort=None).axis(None),
+        # .title('method:N' if len(methods) > 1 else None),
+        alt.X('attribution:Q', scale=alt.Scale(nice=True))
+        .title(None)
+        .axis(format=',.2f'),
+        alt.Color('timestamp:N', sort=None)
+        .title('Crop calendar')
+        .legend(orient='right', titleOrient='top'),
+    )
+    chart_zero = base.mark_rule(color='red', width=3).encode(x='zero:Q')
+    chart = (chart_attributions + chart_zero).facet(
+        row=alt.Row('channel:N')
+        .title(None)
+        .header(labelAngle=0, labelAlign='left'),
+        column=alt.Column('method:N', sort=None).title(None),
+    )
+    return chart
+
+
+def get_channel_chart(features: Features):
+    data = features.as_df()
     base = alt.Chart(data)
-    max = data['y'].abs().max() * 1.2
+    max = data['attribution'].abs().max() * 1.2
     y = alt.Y(
-        'y:Q',
+        'attribution:Q',
         scale=alt.Scale(domain=[-max, max]),
         title='attribution',
     )
-    x = alt.X(
-        'x',
-        title='',
-        axis=alt.Axis(labelAngle=90),
-    )
+    x = alt.X('channel', title='', axis=alt.Axis(labelAngle=90))
 
-    bar = (
-        base.mark_bar()
-        .encode(
-            x=x,
-            y=y,
-        )
-        .interactive()
+    bar = base.mark_bar().encode(x=x, y=y).interactive()
+    text = base.encode(
+        x='channel:N',
+        y='attribution:Q',
+        text=alt.Text('attribution:Q', format=',.2f'),
     )
-    text = base.encode(x='x', y='y', text=alt.Text('y:Q', format=',.2f'))
-    text_above = text.transform_filter(alt.datum.y > 0).mark_text(
+    text_above = text.transform_filter(alt.datum.attribution > 0).mark_text(
         align='center', baseline='middle', fontSize=11, dy=-10, color='white'
     )
 
-    text_below = text.transform_filter(alt.datum.y < 0).mark_text(
+    text_below = text.transform_filter(alt.datum.attribution < 0).mark_text(
         align='center', baseline='middle', fontSize=11, dy=12, color='white'
     )
     return bar + text_above + text_below
 
 
-def get_attribution(index: int, method: str):
+def get_timeseries_chart(features: Features):
+    data = features.as_df()
+    data['timestamp'] = pd.to_datetime(data['timestamp'], format='%B-%d')
+    base = alt.Chart(data)
+    max = data['attribution'].abs().max() * 1.2
+    y = alt.Y(
+        'attribution:Q',
+        scale=alt.Scale(domain=[-max, max]),
+        title='attribution',
+    )
+    x = alt.X('timestamp', title='', axis=alt.Axis(labelAngle=90))
+
+    bar = base.mark_bar().encode(x=x, y=y).interactive()
+    text = base.encode(
+        x='timestamp',
+        y='attribution',
+        text=alt.Text('attribution:Q', format=',.2f'),
+    )
+    text_above = text.transform_filter(alt.datum.attribution > 0).mark_text(
+        align='center', baseline='middle', fontSize=11, dy=-10, color='white'
+    )
+
+    text_below = text.transform_filter(alt.datum.attribution < 0).mark_text(
+        align='center', baseline='middle', fontSize=11, dy=12, color='white'
+    )
+    return bar + text_above + text_below
+
+
+def get_channel_attributions(input: torch.Tensor, method: str):
+    channel_explainer = ChannelExplainer(
+        get_model(), get_dataset()._feature_names
+    )
+    return getattr(channel_explainer, method)(input)
+
+
+def get_timeseries_attributions(input: torch.Tensor, method: str):
+    timeseries_explainer = TimeseriesExplainer(
+        get_model(), get_dataset()._timestamps
+    )
+    return getattr(timeseries_explainer, method)(input)
+
+
+def get_multivariate_attributions(
+    input: torch.Tensor, method: str, flatten: bool = False
+):
+    dataset = get_dataset()
+    modis_groups, modis_labels = get_modis_bands_groups()
+    timestamp_groups, timestamp_labels = get_crop_calendar_groups(
+        dataset._timestamps
+    )
+    multivariate_explainer = MultivariateTimeseriesExplainer(
+        get_model(),
+        # timestamps=dataset._timestamps,
+        timestamps=list(timestamp_labels.values()),
+        channel_names=list(modis_labels.values()),
+        timestamp_groups=timestamp_groups,
+        channel_groups=modis_groups,
+    )
+
+    return getattr(multivariate_explainer, method)(input)
+
+
+@st.cache_data
+def get_prediction(index: int) -> tuple[float, float]:
     dataset = get_dataset()
     model = get_model()
-    method_name = method.lower().replace(' ', '_')
-    location = dataset.locations[index]
     images, target = dataset[index]
     images = images.to(DEVICE).unsqueeze(0)
     target = float(target.cpu())
     prediction = float(model(images).detach().cpu())
-    channel_explainer = ChannelExplainer(model, dataset._feature_names)
-    channel_attribution = getattr(channel_explainer, method_name)(images)
-    timeseries_explainer = TimeseriesExplainer(model, dataset._timestamps)
-    timeseries_attribution = getattr(timeseries_explainer, method_name)(images)
-    # multivariate_timeseries_explainer = MultivariateTimeseriesExplainer(
-    #    model, dataset._feature_names, dataset._timestamps
-    # )
-    # multivariate_timeseries_attribution = getattr(
-    #    multivariate_timeseries_explainer, method_name
-    # )(images)
+    return (target, prediction)
+
+
+def get_attributions(
+    index: int,
+    methods: c.Sequence[str],
+    attribution_funcs: c.Sequence[AttributionFunc],
+) -> list[ExplainerOutput]:
+    dataset = get_dataset()
+    images, _ = dataset[index]
+    images = images.to(DEVICE).unsqueeze(0)
+    attributions = []
+    for method in methods:
+        method_func_name = method.lower().replace(' ', '_')
+        for func in attribution_funcs:
+            output = func(images, method_func_name)
+            attributions.append(output)
+    return attributions
+
+
+def get_grades(
+    story: str, attributions: c.Sequence[ExplainerOutput], index: int
+):
+    dataset = get_dataset()
+    location = dataset.locations[index]
+    _, prediction = get_prediction(index)
+    grader = Grader(
+        dataset._dataset_description,
+        dataset._input_description,
+        dataset._output_description,
+        str(location),
+        prediction,
+        story=story,
+        attributions=attributions,
+    )
+    return (grader.grade_accuracy(), grader.grade_completeness())
+
+
+def get_comparison(stories: c.Sequence[str], index: int):
+    dataset = get_dataset()
+    location = dataset.locations[index]
+    _, prediction = get_prediction(index)
+    story = StoryEvaluator(
+        dataset._dataset_description,
+        dataset._input_description,
+        dataset._output_description,
+        str(location),
+        prediction,
+        stories=stories,
+    )
+    return story.get_best_story_stream()
+
+
+def get_story(attributions: c.Sequence[ExplainerOutput], index: int):
+    dataset = get_dataset()
+    location = dataset.locations[index]
+    _, prediction = get_prediction(index)
     story = AttributionStory(
         dataset._dataset_description,
         dataset._input_description,
         dataset._output_description,
         str(location),
         prediction,
-        target,
-        channel_explainers=[channel_attribution],
-        timeseries_explainers=[timeseries_attribution],
-        # multivariate_timeseries_explainers=[
-        #    multivariate_timeseries_attribution
-        # ],
+        attributions=attributions,
     )
-    prompt = story.build()
 
-    return (
-        prompt,
-        story.get_stream(prompt),
-        get_attribution_chart(channel_attribution),
-        get_attribution_chart(timeseries_attribution, is_timeseries=True),
-    )
+    return story.get_story_stream()
 
 
 def get_colors_from_values(values):
@@ -330,31 +465,150 @@ def app():
     with row3_col1:
         st.altair_chart(get_crop_yield_chart(state, county))
 
-    row4_col1, row4_col2 = st.columns([0.5, 0.5])
-    row5_col1, row5_col2 = st.columns([0.3, 0.7])
-    row6_col1 = st.columns(1)[0]
+    tab1, tab2 = st.tabs(['Features', 'XAI methods'])
 
-    def write_explanation():
-        index = gdf[
-            (gdf['STATE_NAME'] == state) & (gdf['NAME'] == county)
-        ].index[0]
-        prompt, stream, channel_chart, timeseries_chart = get_attribution(
-            index, attribution_method
-        )
-        with row5_col1:
-            st.altair_chart(channel_chart)
-        with row5_col2:
-            st.altair_chart(timeseries_chart)
-        with row6_col1:
-            st.chat_message('user').write(prompt)
-            st.chat_message('assistant').write_stream(stream_handler(stream))
+    def handle_tab1():
+        row4_col1, row4_col2 = st.columns([0.5, 0.5])
+        row5 = st.columns([0.3, 0.3, 0.3])
+        row6 = st.columns([0.3, 0.3, 0.3])
 
-    with row4_col2:
-        attribution_method = st.selectbox(
-            'Attribution method', ATTRIBUTION_METHODS
+        def write_explanation():
+            index = gdf[
+                (gdf['STATE_NAME'] == state) & (gdf['NAME'] == county)
+            ].index[0]
+            attributions = get_attributions(
+                index,
+                [attribution_method],
+                [
+                    get_channel_attributions,
+                    get_timeseries_attributions,
+                    get_multivariate_attributions,
+                ],
+            )
+            channel_attributions_plot = get_channel_chart(
+                attributions[0]['attributions'][0]
+            )
+            timeseries_attribution_plot = get_timeseries_chart(
+                attributions[1]['attributions'][0]
+            )
+            multivariate_attribution_plot = get_multivariate_chart(
+                [attributions[2]]
+            )
+            charts = (
+                channel_attributions_plot,
+                timeseries_attribution_plot,
+                multivariate_attribution_plot,
+            )
+            for row, chart in zip(row5, charts):
+                with row:
+                    st.altair_chart(chart)
+            futures = []
+            with ThreadPoolExecutor() as executor:
+                for attribution, column_stream in zip(attributions, row6):
+                    ctx = get_script_run_ctx()
+                    futures.append(
+                        executor.submit(
+                            stream_story_in_column,
+                            ctx,
+                            column_stream,
+                            [attribution],
+                            index,
+                        )
+                    )
+
+        with row4_col2:
+            attribution_method = st.selectbox(
+                'Attribution method', ATTRIBUTION_METHODS
+            )
+        with row4_col1:
+            st.button(
+                'Generate explanations', key='tab1', on_click=write_explanation
+            )
+
+    def handle_tab2():
+        row4_col1, row4_col2 = st.columns([0.5, 0.5])
+        row5 = st.columns([0.9])[0]
+        row6 = st.columns([0.3, 0.3, 0.3])
+        row7 = st.columns(1)[0]
+
+        # row6_col1 = st.columns(1)[0]
+        def write_explanation():
+            for method, col in zip(ATTRIBUTION_METHODS, row6):
+                with col:
+                    st.title(method)
+            index = gdf[
+                (gdf['STATE_NAME'] == state) & (gdf['NAME'] == county)
+            ].index[0]
+            attributions = get_attributions(
+                index,
+                ATTRIBUTION_METHODS,
+                [get_multivariate_attributions],
+            )
+            chart = get_multivariate_chart(attributions)
+            with row5:
+                st.altair_chart(chart, use_container_width=False)
+            futures = []
+            with ThreadPoolExecutor() as executor:
+                for i, (attribution, column) in enumerate(
+                    zip(attributions, row6)
+                ):
+                    ctx = get_script_run_ctx()
+                    futures.append(
+                        executor.submit(
+                            stream_story_in_column,
+                            ctx,
+                            column,
+                            [attribution],
+                            index,
+                        )
+                    )
+            stories = [future.result() for future in futures]
+            stream_comparison_in_column(row7, stories, index)
+
+        with row4_col1:
+            st.button(
+                'Generate explanations', key='tab2', on_click=write_explanation
+            )
+
+    with tab1:
+        handle_tab1()
+    with tab2:
+        handle_tab2()
+
+
+def stream_comparison_in_column(column, stories, index) -> str:
+    prompt, stream = get_comparison(stories, index)
+    with column:
+        with st.expander('See prompt'):
+            st.chat_message('human').write(prompt)
+        response = st.chat_message('assistant').write_stream(
+            stream_handler(stream)
         )
-    with row4_col1:
-        st.button('Generate explanations', on_click=write_explanation)
+        return response
+
+
+def stream_story_in_column(ctx, column, attributions, index) -> str:
+    prompt, stream = get_story(attributions, index)
+    add_script_run_ctx(current_thread(), ctx)
+    with column:
+        with st.expander('See prompt'):
+            st.chat_message('human').write(prompt)
+        response = st.chat_message('assistant').write_stream(
+            stream_handler(stream)
+        )
+        # accuracy, completeness = get_grades(response, attributions, index)
+        # accuracy_prompt, stream = accuracy
+        # accuracy = st.chat_message('assistant').write_stream(
+        #    stream_handler(stream)
+        # )
+
+        # completeness_prompt, stream = completeness
+        # with st.expander('See prompt'):
+        #    st.chat_message('human').write(completeness_prompt)
+        # completeness = st.chat_message('assistant').write_stream(
+        #    stream_handler(stream)
+        # )
+    return response
 
 
 def stream_handler(stream):
