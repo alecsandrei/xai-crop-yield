@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from loguru import logger
 from mpl_toolkits.axes_grid1.axes_grid import ImageGrid
+from statsmodels.stats.proportion import proportions_ztest
 from tqdm import tqdm
 
 from xai_crop_yield.config import (
@@ -20,7 +22,6 @@ from xai_crop_yield.features import get_county_data
 from xai_crop_yield.modeling.train import get_model
 from xai_crop_yield.modeling.xai import (
     ChannelExplainer,
-    FeatureAttribution,
     HeatmapExplainer,
     MultivariateTimeseriesExplainer,
     TimeseriesExplainer,
@@ -64,9 +65,8 @@ def plot_heatmaps(index: int, show: bool = False):
     )
 
 
-def plot_bands(index: int, show: bool = False):
+def plot_bands(images: torch.Tensor, show: bool = False):
     dataset = get_dataset()
-    images, _ = dataset[index]
     arr = images[-1].detach().cpu().numpy()  # year before prediction
     fig = plt.figure(figsize=(9, 9))
     grid = ImageGrid(
@@ -79,7 +79,7 @@ def plot_bands(index: int, show: bool = False):
     )
     grid[0].get_yaxis().set_ticks([])
     grid[0].get_xaxis().set_ticks([])
-    clim = (np.min(images), np.max(images))
+    clim = (np.min(arr), np.max(arr))
     for i, image in enumerate(arr):
         im = grid[i].imshow(image, clim=clim)
         grid[i].set_title(dataset._feature_names[i])
@@ -87,6 +87,13 @@ def plot_bands(index: int, show: bool = False):
     plt.tight_layout()
     if show:
         plt.show()
+    return fig
+
+
+def plot_bands_for_index(index: int, show: bool = False):
+    dataset = get_dataset()
+    images, _ = dataset[index]
+    fig = plot_bands(images, show)
     fig.savefig(
         FIGURES_DIR / f'bands_{dataset.locations[index]}.png',
         dpi=300,
@@ -99,6 +106,7 @@ def euclidean_distance(arr1: np.ndarray, arr2: np.ndarray) -> np.floating:
 
 
 def save_attribution_distance_data(index: int):
+    # TODO: broken by refactoring of Features
     model = get_model()
     dataset = get_dataset()
     counties = get_county_data()
@@ -127,15 +135,17 @@ def save_attribution_distance_data(index: int):
         left_on=['STUSPS', 'NAME_LOWERCASE'],
         suffixes=('', '_y'),
     )
-    distance_gdf.to_file(PROCESSED_DATA_DIR / 'similarities.fgb')
+    distance_gdf.to_file(
+        PROCESSED_DATA_DIR
+        / f'{dataset.locations[index]}_attribution_distance.fgb'
+    )
 
 
 def plot_attributions(
-    attributions: FeatureAttribution,
+    attributions: Features,
     show: bool = False,
 ):
-    if isinstance(attributions, torch.Tensor):
-        raise NotImplementedError()
+    # TODO: broken by changing the way in which attributions are returned by Explainers
     df = pd.DataFrame(attributions, columns=['name', 'attribution'])
     max = df['attribution'].abs().max() * 1.2
 
@@ -157,6 +167,7 @@ def plot_attributions(
 def plot_multivariate_timeseries_attributions(
     attributions: FeatureAttribution, show: bool = False
 ):
+    # TODO: broken by changing the way in which attributions are returned by Explainers
     df = pd.DataFrame(attributions)
 
     max = df.abs().values.ravel().max() * 1.2
@@ -299,16 +310,25 @@ def plot_timeseries_attributions(index: int):
     plt.close(fig)
 
 
-if __name__ == '__main__':
-    dataset = get_dataset()
-    for index in range(len(dataset)):
-        plot_grouped_channel_timestamp_attributions(index)
-        # plot_channel_attributions(index)
-        # plot_timeseries_attributions(index)
-    # index = 50
-    # plot_attributions(index, show=True)
-    # breakpoint()
+def plot_story_comparison_results():
+    story_comparison_file = PROCESSED_DATA_DIR / 'story_comparison_results.csv'
+    df = pd.read_csv(story_comparison_file)
+    methods = df.columns[: df.columns.tolist().index('shuffle')]
+    value_counts = df['best_story'].value_counts().sort_index()
+    fig, ax = plt.subplots()
+    ax.bar(methods, value_counts.values)
+    if value_counts.shape[0] == 2:
+        statistic, pvalue = proportions_ztest(
+            value_counts.sort_values().values,
+            value_counts.sum(),
+            alternative='smaller',
+        )
+        logger.info(
+            'For story comparisons found statistic %f with pvalue %f'
+            % (statistic, pvalue)
+        )
+    plt.show()
 
-    # save_attribution_distance_data(index)
-    # plot_bands(index)
-    # plot_heatmaps(index)
+
+if __name__ == '__main__':
+    plot_story_comparison_results()

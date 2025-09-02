@@ -104,14 +104,14 @@ class SustainBenchCropYieldTimeseries(Dataset):
         return (dataset, locations.tolist())
 
     def _load(self):
-        splits = [
+        processed_splits = [
             self._handle_split(split) for split in ('train', 'test', 'dev')
         ]
         chain_dataset = itertools.chain.from_iterable(
-            iter(split[0]) for split in splits
+            iter(split[0]) for split in processed_splits
         )
         chain_locations = itertools.chain.from_iterable(
-            split[1] for split in splits
+            split[1] for split in processed_splits
         )
         data = defaultdict(list)  # type: ignore
         for dataset, location in zip(chain_dataset, chain_locations):

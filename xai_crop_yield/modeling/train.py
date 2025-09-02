@@ -9,9 +9,12 @@ import torch
 import torch.nn as nn
 import torchmetrics
 import torchmetrics.regression
+from loguru import logger
 
 from xai_crop_yield.config import DEVICE, MODELS_DIR, RAW_DATA_DIR
-from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
+from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries, get_dataset
+from xai_crop_yield.modeling.tune import Continuity, Shannon
+from xai_crop_yield.modeling.xai import ChannelExplainer
 
 
 def get_model():
@@ -304,31 +307,56 @@ class RegressionMetricCollection(torchmetrics.MetricCollection):
     def __init__(self, prefix: str | None = None):
         super().__init__(
             {
-                'r2': torchmetrics.regression.R2Score(),
                 'mse': torchmetrics.regression.MeanSquaredError(),
                 'mae': torchmetrics.regression.MeanAbsoluteError(),
                 'rmse': RootMeanSquaredError(),
                 'mape': torchmetrics.regression.MeanAbsolutePercentageError(),
+                'r2': torchmetrics.regression.R2Score(),
             }
         )
 
 
 class ConvLSTMModel(pl.LightningModule):
-    def __init__(self):
+    def __init__(self, hidden_dim: int = 10, learning_rate: float = 0.01):
         super().__init__()
         self.model = ConvLSTMRegressor(
             input_dim=9,
-            hidden_dim=[10],
+            hidden_dim=[hidden_dim],
             kernel_size=(3, 3),
             num_layers=1,
             batch_first=True,
             bias=True,
             return_all_layers=True,
         )
+        self.learning_rate = learning_rate
+        self.dataset = get_dataset()
         self.criterion = nn.MSELoss()
+        self.xai_loss = True
         self.train_metrics = RegressionMetricCollection(prefix='train_')
         self.val_metrics = self.train_metrics.clone(prefix='val_')
         self.test_metrics = self.train_metrics.clone(prefix='test_')
+        self.shannon = {
+            split: self._get_shannon() for split in ('train', 'test', 'val')
+        }
+        self.continuity = {
+            split: self._get_continuity() for split in ('train', 'test', 'val')
+        }
+
+    def _get_shannon(self) -> Shannon:
+        return Shannon(
+            self,
+            attribution_explainer=ChannelExplainer(
+                self, channel_names=self.dataset._feature_names, sort=True
+            ),
+        )
+
+    def _get_continuity(self) -> Continuity:
+        return Continuity(
+            self,
+            attribution_explainer=ChannelExplainer(
+                self, channel_names=self.dataset._feature_names, sort=False
+            ),
+        )
 
     def forward(self, x):
         return self.model(x)[0]
@@ -338,21 +366,42 @@ class ConvLSTMModel(pl.LightningModule):
         y = y.view(-1, 1)
         logits = self.forward(x)
         self.train_metrics.update(logits, y)
+        self.shannon['train'].update(x)
+        self.continuity['train'].update(x)
         loss = self.criterion(logits, y.float())
-        self.log('train_loss', loss, sync_dist=True)
+        self.log('loss', loss, sync_dist=True)
         return loss
 
     def on_train_epoch_end(self):
-        self.log_dict(
-            self.train_metrics.compute(), sync_dist=True, prog_bar=True
-        )
+        try:
+            self.log_dict(
+                self.train_metrics.compute(), sync_dist=True, prog_bar=True
+            )
+        except Exception as e:
+            logger.error('Failed to compute metrics due to error %s' % e)
         self.train_metrics.reset()
+        self.log(
+            'shannon',
+            self.shannon['train'].compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            'continuity',
+            self.continuity['train'].compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.shannon['train'].reset()
+        self.continuity['train'].reset()
 
     def validation_step(self, val_batch, batch_idx):
         x, y = val_batch
         y = y.view(-1, 1)
         logits = self.forward(x)
         self.val_metrics.update(logits, y)
+        self.shannon['val'].update(x)
+        self.continuity['val'].update(x)
         loss = self.criterion(logits, y.float())
         self.log('val_loss', loss, sync_dist=True, prog_bar=True)
         return loss
@@ -362,33 +411,77 @@ class ConvLSTMModel(pl.LightningModule):
         y = y.view(-1, 1)
         logits = self.forward(x)
         self.test_metrics.update(logits, y)
+        self.shannon['test'].update(x)
+        self.continuity['test'].update(x)
         loss = self.criterion(logits, y.float())
-        self.log_dict(self.test_metrics.compute(), sync_dist=True)
         self.log('test_loss', loss, sync_dist=True)
 
+    def on_test_epoch_end(self):
+        try:
+            self.log_dict(
+                self.test_metrics.compute(), sync_dist=True, prog_bar=True
+            )
+        except Exception as e:
+            logger.error('Failed to compute metrics due to error %s' % e)
+        self.log(
+            'test_shannon',
+            self.shannon['test'].compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            'test_continuity',
+            self.continuity['test'].compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.test_metrics.reset()
+        self.shannon['test'].reset()
+        self.continuity['test'].reset()
+
     def on_validation_epoch_end(self):
-        self.log_dict(self.val_metrics.compute(), sync_dist=True, prog_bar=True)
+        try:
+            self.log_dict(
+                self.val_metrics.compute(), sync_dist=True, prog_bar=True
+            )
+        except Exception as e:
+            logger.error('Failed to compute metrics due to error %s' % e)
+        self.log(
+            'val_shannon',
+            self.shannon['val'].compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            'val_continuity',
+            self.continuity['val'].compute(),
+            prog_bar=True,
+            sync_dist=True,
+        )
         self.val_metrics.reset()
+        self.shannon['val'].reset()
+        self.continuity['val'].reset()
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=0.01)
+        return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
 
 
-if __name__ == '__main__':
+def train():
     dataset = SustainBenchCropYieldTimeseries(
         RAW_DATA_DIR, country='usa', years=list(range(2005, 2016))
     )
     train_dataloader, test_dataloader, val_dataloader = (
-        dataset._get_dataloaders((0.8, 0.1, 0.1))
+        dataset._get_dataloaders((0.8, 0.1, 0.1), batch_size=2)
     )
 
     model = ConvLSTMModel()
     trainer = pl.Trainer(
         accelerator='gpu',
-        max_epochs=200,
+        max_epochs=50,
         enable_model_summary=True,
         enable_progress_bar=True,
         log_every_n_steps=1,
+        inference_mode=False,
     )
     trainer.fit(
         model,
@@ -397,4 +490,8 @@ if __name__ == '__main__':
     )
     trainer.test(model, dataloaders=test_dataloader)
 
-    trainer.save_checkpoint(MODELS_DIR / 'checkpoint.ckpt')
+    # trainer.save_checkpoint(MODELS_DIR / 'checkpoint.ckpt')
+
+
+if __name__ == '__main__':
+    train()
