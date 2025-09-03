@@ -5,6 +5,7 @@ ConvLSTM implementation taken from https://github.com/ndrplz/ConvLSTM_pytorch/bl
 from __future__ import annotations
 
 import lightning as pl
+import pandas as pd
 import torch
 import torch.nn as nn
 import torchmetrics
@@ -481,7 +482,7 @@ def train():
         enable_model_summary=True,
         enable_progress_bar=True,
         log_every_n_steps=1,
-        inference_mode=False,
+        inference_mode=True,
     )
     trainer.fit(
         model,
@@ -493,5 +494,32 @@ def train():
     # trainer.save_checkpoint(MODELS_DIR / 'checkpoint.ckpt')
 
 
+def infer():
+    dataset = SustainBenchCropYieldTimeseries(
+        RAW_DATA_DIR, country='usa', years=list(range(2005, 2016))
+    )
+    loaders = dataset._get_dataloaders((0.8, 0.1, 0.1), batch_size=2)
+    model = ConvLSTMModel.load_from_checkpoint(MODELS_DIR / 'checkpoint.ckpt')
+    trainer = pl.Trainer(
+        accelerator='gpu',
+        max_epochs=50,
+        enable_model_summary=True,
+        enable_progress_bar=True,
+        log_every_n_steps=1,
+        inference_mode=True,
+    )
+    results = {}
+    for loader, split in zip(loaders, ('train', 'test', 'val')):
+        results[split] = trainer.test(
+            model,
+            dataloaders=loader,
+        )[0]
+
+    df = pd.DataFrame(results)
+    df.index = pd.DataFrame(results).index.str.split('_').str.get(1)
+    df.to_csv(MODELS_DIR / 'checkpoint_results.csv')
+
+
 if __name__ == '__main__':
-    train()
+    # train()
+    infer()

@@ -257,6 +257,7 @@ class MultivariateTimeseriesExplainer(Explainer[MultivariateTimeseriesFeature]):
         return features_list
 
     def index_attributions(self, attributions: torch.Tensor) -> torch.Tensor:
+        # TODO: this might be buggy
         timestamp_indices = list(range((attributions.shape[4])))
         channel_indices = list(range((attributions.shape[2])))
         if self.timestamp_groups is not None:
@@ -481,17 +482,26 @@ class StoryEvaluator(BaseRequester):
 
     @property
     def evaluator_prompt(self) -> str:
-        return """Stories were generated based on feature attributions using XAI methods.
+        story_context = """Stories were generated based on feature attributions using XAI methods.
 Compare the stories using the context and the coherence properties. Analyze the stories and
 return the one which better fits the properties.
 Context - Describes how relevant the explanation is to the user and their needs.
-Coherence - Describes how accordant the explanation is with prior knowledge and beliefs.
-
-{stories}
-
-
-Best story: Start by describing what a good story should contain with respect to the context and coherence properties.
+Coherence - Describes how accordant the explanation is with prior knowledge and beliefs."""
+        best_story = """Start by describing what a good story should contain with respect to the context and coherence properties.
 After that, mention the reason on why you picked the story and the number of the story you picked."""
+        return f"""
+
+Story context: {story_context}
+
+Stories: \n\n {self.get_stories_prompt()}
+
+Best story: {best_story}"""
+
+    def get_stories_prompt(self):
+        story_prompt = ''
+        for i, story in enumerate(self.stories, start=1):
+            story_prompt = '\n\n'.join([story_prompt, f'Story {i}: {story}'])
+        return story_prompt
 
     def get_best_story_stream(self):
         prompt = self.get_best_story_prompt()
@@ -500,11 +510,7 @@ After that, mention the reason on why you picked the story and the number of the
 
     def get_best_story_prompt(self):
         base_prompt = self.get_base_prompt()
-        story_prompt = ''
-        for i, story in enumerate(self.stories, start=1):
-            story_prompt = '\n\n'.join([story_prompt, f'Story {i}: {story}'])
-        evaluator_prompt = self.evaluator_prompt.format(stories=story_prompt)
-        return '\n'.join([base_prompt, evaluator_prompt])
+        return '\n'.join([base_prompt, self.evaluator_prompt])
 
     def get_best_story(self) -> StoryEvaluatorResponse:
         kwargs = {'format': StoryEvaluatorResponse.model_json_schema()}

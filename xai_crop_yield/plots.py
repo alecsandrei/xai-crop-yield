@@ -3,9 +3,11 @@ from __future__ import annotations
 import datetime
 from collections import defaultdict
 
+import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 from loguru import logger
 from mpl_toolkits.axes_grid1.axes_grid import ImageGrid
@@ -15,6 +17,7 @@ from tqdm import tqdm
 from xai_crop_yield.config import (
     DEVICE,
     FIGURES_DIR,
+    INTERIM_DATA_DIR,
     PROCESSED_DATA_DIR,
 )
 from xai_crop_yield.dataset import get_dataset
@@ -310,13 +313,43 @@ def plot_timeseries_attributions(index: int):
     plt.close(fig)
 
 
+def plot_predicted_vs_target(split: str = 'test'):
+    df = gpd.read_file(INTERIM_DATA_DIR / 'predictions.fgb')
+    mask = df['SPLIT'] == split
+    df = df[mask]
+
+    fig, ax = plt.subplots()
+
+    sns.scatterplot(df, x='2015', y='predicted_2015', ax=ax)
+
+    ax.plot([0, 1], [0, 1], transform=ax.transAxes, color='black', ls='--')
+
+    plt.xlabel('target')
+    plt.ylabel('prediction')
+    plt.title('Predicted vs target soybean crop yield for 2015')
+
+    ax.set_aspect('equal', adjustable='box')
+
+    plt.savefig(
+        FIGURES_DIR / f'pred_vs_target_{split}.png',
+        dpi=300,
+        bbox_inches='tight',
+    )
+
+    plt.show()
+
+
 def plot_story_comparison_results():
-    story_comparison_file = PROCESSED_DATA_DIR / 'story_comparison_results.csv'
+    story_comparison_file = (
+        PROCESSED_DATA_DIR / 'story_comparison_results_three_methods.csv'
+    )
     df = pd.read_csv(story_comparison_file)
     methods = df.columns[: df.columns.tolist().index('shuffle')]
+    # methods = ['MODIS bands', 'MODIS timestamps', 'multivariate']
     value_counts = df['best_story'].value_counts().sort_index()
     fig, ax = plt.subplots()
-    ax.bar(methods, value_counts.values)
+    bar = ax.bar(methods, value_counts.values)
+    ax.bar_label(bar)
     if value_counts.shape[0] == 2:
         statistic, pvalue = proportions_ztest(
             value_counts.sort_values().values,
@@ -327,8 +360,17 @@ def plot_story_comparison_results():
             'For story comparisons found statistic %f with pvalue %f'
             % (statistic, pvalue)
         )
+    plt.title(
+        'Answers provided by the LLM when asked which story was\nmore coherent and relevant for the end user'
+    )
+    plt.savefig(
+        FIGURES_DIR / f'{story_comparison_file.stem}.png',
+        dpi=300,
+        bbox_inches='tight',
+    )
     plt.show()
 
 
 if __name__ == '__main__':
+    # plot_predicted_vs_target()
     plot_story_comparison_results()

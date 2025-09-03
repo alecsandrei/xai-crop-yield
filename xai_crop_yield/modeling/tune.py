@@ -64,7 +64,7 @@ def add_gaussian_noise(X, sigma=0.01):
 class Continuity:
     model: ConvLSTMModel
     attribution_explainer: Explainer
-    values: list[float] = field(default_factory=list)
+    values: list[float] = field(default_factory=list, init=False)
 
     @staticmethod
     def attributions_to_ndarray(attributions: ExplainerOutput) -> np.ndarray:
@@ -109,7 +109,8 @@ class Shannon:
     model: ConvLSTMModel
     attribution_explainer: Explainer
     top_k: int = 5
-    counter: Counter[str] = field(default_factory=Counter)
+    normalize: bool = False
+    counter: Counter[str] = field(default_factory=Counter, init=False)
 
     def get_top_k_attributions(self, images: torch.Tensor) -> list[str]:
         attributions = self.attribution_explainer.feature_ablation(images)
@@ -130,8 +131,9 @@ class Shannon:
         total = self.counter.total()
         probs = [val / total for val in self.counter.values()]
         shannon = self.shannon(np.array(probs))
-        normalized_shannon = shannon / np.log(total)
-        return normalized_shannon
+        if self.normalize:
+            shannon /= np.log(total)
+        return shannon
 
     def reset(self):
         self.counter.clear()
@@ -236,7 +238,7 @@ class StopAtLossThreshold(Callback):
 
 
 def get_trainer(epochs: int):
-    stop_at_loss = StopAtLossThreshold('val_r2', min_value=0.7)
+    stop_at_loss = StopAtLossThreshold('val_r2', min_value=0.8)
     return pl.Trainer(
         devices='auto',
         accelerator='gpu',

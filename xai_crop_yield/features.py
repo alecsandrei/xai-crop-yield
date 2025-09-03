@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import geopandas as gpd
+import pandas as pd
 
 from xai_crop_yield.config import RAW_DATA_DIR
 
@@ -16,3 +17,7 @@ def get_county_data() -> gpd.GeoDataFrame:
     county = county.merge(state, on='STATEFP')
     county['NAME_LOWERCASE'] = county['NAME'].str.lower()
     return county
+
+
+def get_data_split() -> pd.DataFrame:
+    return pd.read_csv(RAW_DATA_DIR / 'splits.csv')

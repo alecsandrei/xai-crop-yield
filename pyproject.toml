@@ -27,6 +27,7 @@ dependencies = [
     "pytest",
     "ray>=2.49.0",
     "ruff",
+    "seaborn>=0.13.2",
     "shap>=0.48.0",
     "streamlit>=1.48.1",
     "torchgeo>=0.7.1",

@@ -21,9 +21,9 @@ from torch import nn
 
 import xai_crop_yield.dataset
 import xai_crop_yield.modeling.train
-from xai_crop_yield.config import DEVICE, YEARS
+from xai_crop_yield.config import DEVICE, INTERIM_DATA_DIR, YEARS
 from xai_crop_yield.dataset import SustainBenchCropYieldTimeseries
-from xai_crop_yield.features import get_county_data
+from xai_crop_yield.features import get_county_data, get_data_split
 from xai_crop_yield.modeling.xai import (
     AttributionStory,
     ChannelExplainer,
@@ -70,6 +70,7 @@ def get_geom_data():
         geometry='geometry',
         crs=county.crs,
     )
+    geom_data.to_file(INTERIM_DATA_DIR / 'predictions.fgb')
     return geom_data
 
 
@@ -117,9 +118,13 @@ def get_model() -> nn.Module:
 def get_counties_yield_data():
     dataset = get_dataset()
     model = get_model()
+    splits = get_data_split()['split'].values
     counties_data = []
-    for (images, targets), location in zip(dataset.data, dataset.locations):
+    for (images, targets), location, split in zip(
+        dataset.data, dataset.locations, splits
+    ):
         county_data = {}
+        county_data['SPLIT'] = split
         county_data['NAME'] = location.county.title()
         county_data['STUSPS'] = location.state.upper()
         for i, year in enumerate(YEARS_STR):
@@ -471,6 +476,7 @@ def app():
         row4_col1, row4_col2 = st.columns([0.5, 0.5])
         row5 = st.columns([0.3, 0.3, 0.3])
         row6 = st.columns([0.3, 0.3, 0.3])
+        row7 = st.columns(1)[0]
 
         def write_explanation():
             index = gdf[
@@ -515,6 +521,9 @@ def app():
                             index,
                         )
                     )
+
+            stories = [future.result() for future in futures]
+            stream_comparison_in_column(row7, stories, index)
 
         with row4_col2:
             attribution_method = st.selectbox(
